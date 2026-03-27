@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+tree-sitter
+tree-sitter-languages
+requests
+transformers
+torch
+sentence-transformers
+rank-bm25
+networkx
+python-dotenv
+httpx

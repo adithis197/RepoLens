@@ -6,8 +6,7 @@
   "permissions": ["activeTab", "storage"],
   "host_permissions": ["https://github.com/*", "http://localhost:8000/*"],
   "action": {
-    "default_popup": "popup.html",
-    "default_icon": { "16": "assets/icon16.png", "48": "assets/icon48.png" }
+    "default_popup": "popup.html"
   },
   "content_scripts": [
     {
@@ -16,6 +15,7 @@
     }
   ],
   "background": {
-    "service_worker": "src/background.js"
+    "service_worker": "src/background.js",
+    "type": "module"
   }
 }

@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>RepoLens Graph</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+  <style>
+    body { margin: 0; background: #0d1117; color: #e6edf3; font-family: monospace; }
+    #controls { padding: 12px 16px; background: #161b22; border-bottom: 1px solid #30363d; display: flex; gap: 12px; align-items: center; }
+    input[type=text] { background: #0d1117; border: 1px solid #30363d; color: #e6edf3; padding: 6px 10px; border-radius: 6px; width: 340px; font-family: monospace; }
+    button { background: #238636; border: none; color: white; padding: 6px 14px; border-radius: 6px; cursor: pointer; font-family: monospace; }
+    button:hover { background: #2ea043; }
+    #status { font-size: 12px; color: #8b949e; }
+    #canvas { width: 100vw; height: calc(100vh - 52px); }
+    .node circle { stroke-width: 1.5; cursor: pointer; }
+    .node text { font-size: 11px; fill: #e6edf3; pointer-events: none; }
+    .link { stroke: #30363d; stroke-width: 1; }
+    #tooltip { position: absolute; background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 8px 12px; font-size: 12px; pointer-events: none; display: none; max-width: 300px; line-height: 1.6; }
+  </style>
+</head>
+<body>
+<div id="controls">
+  <input type="text" id="repo-url" value="https://github.com/pallets/flask" placeholder="GitHub repo URL"/>
+  <button onclick="analyze()">Analyze</button>
+  <span id="status">Enter a repo URL and click Analyze</span>
+</div>
+<div id="tooltip"></div>
+<svg id="canvas"></svg>
+
+<script>
+const BACKEND = "http://localhost:8000";
+
+async function analyze() {
+  const url = document.getElementById("repo-url").value.trim();
+  const status = document.getElementById("status");
+  status.textContent = "Fetching... (may take 30s)";
+
+  try {
+    const res = await fetch(`${BACKEND}/test/ingestion`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repo_url: url })
+    });
+    const data = await res.json();
+    status.textContent = `${data.graph_nodes} files · ${data.graph_edges} edges · top ${data.top_central_files.length} central files`;
+    renderGraph(data);
+  } catch (e) {
+    status.textContent = "Error: " + e.message;
+  }
+}
+
+function renderGraph(data) {
+  const svg = d3.select("#canvas");
+  svg.selectAll("*").remove();
+
+  const W = window.innerWidth;
+  const H = window.innerHeight - 52;
+
+  const topSet = new Set(data.top_central_files);
+
+  // Build nodes and edges from adjacency + edges_sample
+  const nodeMap = new Map();
+  data.top_central_files.forEach(f => nodeMap.set(f, { id: f, central: true }));
+  data.edges_sample.forEach(e => {
+    if (!nodeMap.has(e.from)) nodeMap.set(e.from, { id: e.from, central: false });
+    if (!nodeMap.has(e.to))   nodeMap.set(e.to,   { id: e.to,   central: false });
+  });
+
+  const nodes = Array.from(nodeMap.values());
+  const links = data.edges_sample.map(e => ({ source: e.from, target: e.to }));
+
+  const sim = d3.forceSimulation(nodes)
+    .force("link", d3.forceLink(links).id(d => d.id).distance(80))
+    .force("charge", d3.forceManyBody().strength(-120))
+    .force("center", d3.forceCenter(W / 2, H / 2))
+    .force("collision", d3.forceCollide(20));
+
+  const g = svg.append("g");
+
+  svg.call(d3.zoom().on("zoom", e => g.attr("transform", e.transform)));
+
+  // Arrow marker
+  svg.append("defs").append("marker")
+    .attr("id", "arrow")
+    .attr("viewBox", "0 0 10 10")
+    .attr("refX", 18).attr("refY", 5)
+    .attr("markerWidth", 6).attr("markerHeight", 6)
+    .attr("orient", "auto-start-reverse")
+    .append("path")
+    .attr("d", "M2 1L8 5L2 9")
+    .attr("fill", "none")
+    .attr("stroke", "#8b949e")
+    .attr("stroke-width", 1.5);
+
+  const link = g.append("g").selectAll("line")
+    .data(links).join("line")
+    .attr("class", "link")
+    .attr("marker-end", "url(#arrow)");
+
+  const tooltip = document.getElementById("tooltip");
+
+  const node = g.append("g").selectAll("g")
+    .data(nodes).join("g")
+    .attr("class", "node")
+    .call(d3.drag()
+      .on("start", (e, d) => { if (!e.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+      .on("drag",  (e, d) => { d.fx = e.x; d.fy = e.y; })
+      .on("end",   (e, d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; }))
+    .on("mouseover", (e, d) => {
+      const adj = data.adjacency[d.id];
+      tooltip.style.display = "block";
+      tooltip.innerHTML = `<strong>${d.id.split("/").pop()}</strong><br/>
+        <span style="color:#8b949e">${d.id}</span><br/>
+        ${adj ? `imports: ${adj.imports.length} · imported by: ${adj.imported_by.length}` : ""}`;
+    })
+    .on("mousemove", e => {
+      tooltip.style.left = (e.pageX + 12) + "px";
+      tooltip.style.top  = (e.pageY - 10) + "px";
+    })
+    .on("mouseout", () => tooltip.style.display = "none");
+
+  node.append("circle")
+    .attr("r", d => d.central ? 10 : 6)
+    .attr("fill", d => d.central ? "#f78166" : "#388bfd")
+    .attr("stroke", d => d.central ? "#ff7b72" : "#1f6feb");
+
+  node.append("text")
+    .attr("x", 13).attr("y", 4)
+    .text(d => d.id.split("/").pop());
+
+  sim.on("tick", () => {
+    link
+      .attr("x1", d => d.source.x).attr("y1", d => d.source.y)
+      .attr("x2", d => d.target.x).attr("y2", d => d.target.y);
+    node.attr("transform", d => `translate(${d.x},${d.y})`);
+  });
+}
+</script>
+</body>
+</html>

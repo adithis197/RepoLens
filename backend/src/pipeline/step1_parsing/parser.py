@@ -14,6 +14,56 @@ LANGUAGE_MAP = {
     ".jsx": JS_LANGUAGE,
 }
 
+NOISE_DIRS = {
+    "tests",
+    "test",
+    "examples",
+    "docs",
+    "docs_src",
+    ".github",
+    "__pycache__",
+    "build",
+    "dist",
+    "node_modules",
+    ".venv",
+    "venv",
+    "scripts",
+}
+
+NOISE_FILE_PREFIXES = (
+    "test_",
+)
+
+NOISE_FILE_SUFFIXES = (
+    "_test.py",
+    ".spec.js",
+    ".test.js",
+)
+
+NOISE_FILES = {
+    "conftest.py",
+}
+
+def is_noise_path(path: str) -> bool:
+    """Return True if the path corresponds to non-architectural noise."""
+    parts = [p.lower() for p in path.split("/")]
+    filename = parts[-1]
+
+    # Exclude unwanted directories
+    if any(part in NOISE_DIRS for part in parts[:-1]):
+        return True
+
+    # Exclude test-related filenames
+    if filename.startswith(NOISE_FILE_PREFIXES):
+        return True
+
+    if filename.endswith(NOISE_FILE_SUFFIXES):
+        return True
+
+    if filename in NOISE_FILES:
+        return True
+
+    return False
 
 def _walk_imports_py(node, imports):
     """Recursively walk AST and extract Python import module names."""
@@ -127,10 +177,21 @@ def build_dependency_graph(snapshot: RepoSnapshot) -> nx.DiGraph:
 
 
 def get_high_centrality_files(graph: nx.DiGraph, top_n: int = 20) -> list:
-    """Return top-N files by PageRank — most imported = most central."""
+    """Return top-N central files excluding noisy paths."""
     if graph.number_of_nodes() == 0:
         return []
+
     if graph.number_of_edges() == 0:
-        return list(graph.nodes)[:top_n]
+        filtered_nodes = [
+            node for node in graph.nodes if not is_noise_path(node)
+        ]
+        return filtered_nodes[:top_n]
+
     scores = nx.pagerank(graph)
-    return sorted(scores, key=scores.get, reverse=True)[:top_n]
+    ranked_files = sorted(scores, key=scores.get, reverse=True)
+
+    filtered_files = [
+        path for path in ranked_files if not is_noise_path(path)
+    ]
+
+    return filtered_files[:top_n]

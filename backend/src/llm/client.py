@@ -1,36 +1,37 @@
 """
 LLM client abstraction.
-Supports local Qwen2.5-Coder and OpenAI-compatible APIs.
+Supports OpenAI-compatible APIs and local Ollama models.
 Swap backend via LLM_BACKEND env var: "openai" | "local"
 """
 import os
 import httpx
-
-LLM_BACKEND = os.getenv("LLM_BACKEND", "openai")
-LLM_API_KEY = os.getenv("LLM_API_KEY", "")
-LLM_MODEL = os.getenv("LLM_MODEL", "Qwen/Qwen2.5-Coder-7B-Instruct")
-LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
 
 
 async def call_llm(prompt: str, max_tokens: int = 2048) -> str:
     """
     Send a prompt to the configured LLM and return the raw text response.
     """
-    if LLM_BACKEND == "openai":
+    llm_backend = os.getenv("LLM_BACKEND", "openai")
+
+    if llm_backend == "openai":
         return await _call_openai_compatible(prompt, max_tokens)
-    elif LLM_BACKEND == "local":
+    elif llm_backend == "local":
         return await _call_local(prompt, max_tokens)
     else:
-        raise ValueError(f"Unknown LLM_BACKEND: {LLM_BACKEND}")
+        raise ValueError(f"Unknown LLM_BACKEND: {llm_backend}")
 
 
 async def _call_openai_compatible(prompt: str, max_tokens: int) -> str:
+    llm_api_key = os.getenv("LLM_API_KEY", "")
+    llm_model = os.getenv("LLM_MODEL", "gpt-4o-mini")
+    llm_base_url = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
+
     async with httpx.AsyncClient() as client:
         resp = await client.post(
-            f"{LLM_BASE_URL}/chat/completions",
-            headers={"Authorization": f"Bearer {LLM_API_KEY}"},
+            f"{llm_base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {llm_api_key}"},
             json={
-                "model": LLM_MODEL,
+                "model": llm_model,
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": max_tokens,
                 "temperature": 0.2,
@@ -42,5 +43,26 @@ async def _call_openai_compatible(prompt: str, max_tokens: int) -> str:
 
 
 async def _call_local(prompt: str, max_tokens: int) -> str:
-    # TODO: implement local HuggingFace inference
-    raise NotImplementedError
+    """
+    Call a local Ollama model.
+    """
+    llm_model = os.getenv("LLM_MODEL", "qwen2.5:7b-instruct")
+    llm_base_url = os.getenv("LLM_BASE_URL", "http://127.0.0.1:11434")
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{llm_base_url}/api/generate",
+            json={
+                "model": llm_model,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "temperature": 0.2,
+                    "num_predict": max_tokens,
+                },
+            },
+            timeout=300,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("response", "").strip()

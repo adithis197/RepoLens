@@ -11,11 +11,24 @@ export default function Popup() {
   useEffect(() => {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       const url = tabs[0]?.url || "";
-      setRepoUrl(url);
-      const match = url.match(/github\.com\/([^/]+\/[^/]+)/);
+      console.log("Current tab URL:", url);
+
+      const match = url.match(/^https?:\/\/github\.com\/([^/]+)\/([^/?#]+)/);
+
       if (match) {
+        const owner = match[1];
+        const repo = match[2].replace(/\.git$/, "");
+        const cleanRepoUrl = `https://github.com/${owner}/${repo}`;
+
         setIsGitHub(true);
-        setRepoName(match[1]);
+        setRepoName(`${owner}/${repo}`);
+        setRepoUrl(cleanRepoUrl);
+
+        console.log("Clean repo URL:", cleanRepoUrl);
+      } else {
+        setIsGitHub(false);
+        setRepoName("");
+        setRepoUrl("");
       }
     });
   }, []);
@@ -24,17 +37,30 @@ export default function Popup() {
     setLoading(true);
     setError(null);
     setResult(null);
+
     try {
-      const res = await fetch("http://localhost:8000/test/ingestion", {
+      console.log("Sending repo_url:", repoUrl);
+
+      const res = await fetch("http://localhost:8000/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ repo_url: repoUrl }),
       });
-      const data = await res.json();
+
+      const text = await res.text();
+      console.log("Raw response:", text);
+
+      if (!res.ok) {
+        throw new Error(`Backend returned ${res.status}: ${text}`);
+      }
+
+      const data = JSON.parse(text);
       setResult(data);
     } catch (e) {
-      setError("Backend not running. Start it with: python3 -m uvicorn src.api.main:app --reload");
+      console.error("Analyze failed:", e);
+      setError(e.message || "Something went wrong.");
     }
+
     setLoading(false);
   }
 
@@ -66,8 +92,10 @@ export default function Popup() {
 
           {loading && (
             <div style={styles.loadingBox}>
-              <p style={styles.loadingText}>Fetching repo + building dependency graph...</p>
-              <p style={styles.loadingSubtext}>This may take 20-30 seconds</p>
+              <p style={styles.loadingText}>
+                Fetching repo + building dependency graph...
+              </p>
+              <p style={styles.loadingSubtext}>This may take 20–30 seconds</p>
             </div>
           )}
 
@@ -79,35 +107,103 @@ export default function Popup() {
 
           {result && (
             <div style={styles.resultBox}>
-              <div style={styles.stat}>
-                <span style={styles.statNum}>{result.total_files}</span>
-                <span style={styles.statLabel}>files</span>
-              </div>
-              <div style={styles.stat}>
-                <span style={styles.statNum}>{result.graph_edges}</span>
-                <span style={styles.statLabel}>imports</span>
-              </div>
-              <div style={styles.stat}>
-                <span style={styles.statNum}>{result.graph_nodes}</span>
-                <span style={styles.statLabel}>nodes</span>
-              </div>
-
-              <div style={styles.section}>
-                <p style={styles.sectionTitle}>Top central files</p>
-                {result.top_central_files?.slice(0, 5).map((f) => (
-                  <div key={f} style={styles.fileRow}>
-                    <span style={styles.fileName}>{f.split("/").pop()}</span>
-                    <span style={styles.filePath}>{f}</span>
-                  </div>
-                ))}
+              {/* Stats (Person 1) */}
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <div style={styles.stat}>
+                  <span style={styles.statNum}>{result.total_files}</span>
+                  <span style={styles.statLabel}>files</span>
+                </div>
+                <div style={styles.stat}>
+                  <span style={styles.statNum}>{result.graph_edges}</span>
+                  <span style={styles.statLabel}>imports</span>
+                </div>
+                <div style={styles.stat}>
+                  <span style={styles.statNum}>{result.graph_nodes}</span>
+                  <span style={styles.statLabel}>nodes</span>
+                </div>
               </div>
 
-              <div style={styles.section}>
-                <p style={styles.sectionTitle}>Signal files</p>
-                {result.signal_files?.map((f) => (
-                  <span key={f} style={styles.pill}>{f.split("/").pop()}</span>
-                ))}
-              </div>
+              {/* Summary */}
+              {result.repo_summary && (
+                <div style={styles.section}>
+                  <p style={styles.sectionTitle}>Repository summary</p>
+                  <p style={styles.bodyText}>{result.repo_summary}</p>
+                </div>
+              )}
+
+              {/* Domain */}
+              {result.domain && (
+                <div style={styles.section}>
+                  <p style={styles.sectionTitle}>Domain</p>
+                  <p style={styles.bodyText}>{result.domain}</p>
+                </div>
+              )}
+
+              {/* Tech Stack */}
+              {result.tech_stack?.length > 0 && (
+                <div style={styles.section}>
+                  <p style={styles.sectionTitle}>Tech stack</p>
+                  {result.tech_stack.map((item) => (
+                    <span key={item} style={styles.pill}>{item}</span>
+                  ))}
+                </div>
+              )}
+
+              {/* Main Modules */}
+              {result.main_modules?.length > 0 && (
+                <div style={styles.section}>
+                  <p style={styles.sectionTitle}>Main modules</p>
+                  {result.main_modules.map((item) => (
+                    <div key={item} style={styles.listItem}>{item}</div>
+                  ))}
+                </div>
+              )}
+
+              {/* Entry Points */}
+              {result.entry_points?.length > 0 && (
+                <div style={styles.section}>
+                  <p style={styles.sectionTitle}>Entry points</p>
+                  {result.entry_points.map((item) => (
+                    <div key={item} style={styles.fileRow}>
+                      <span style={styles.fileName}>{item.split("/").pop()}</span>
+                      <span style={styles.filePath}>{item}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Keywords */}
+              {result.keywords?.length > 0 && (
+                <div style={styles.section}>
+                  <p style={styles.sectionTitle}>Keywords</p>
+                  {result.keywords.map((item) => (
+                    <span key={item} style={styles.pill}>{item}</span>
+                  ))}
+                </div>
+              )}
+
+              {/* Top Central Files (Person 1) */}
+              {result.top_central_files?.length > 0 && (
+                <div style={styles.section}>
+                  <p style={styles.sectionTitle}>Top central files</p>
+                  {result.top_central_files.slice(0, 5).map((f) => (
+                    <div key={f} style={styles.fileRow}>
+                      <span style={styles.fileName}>{f.split("/").pop()}</span>
+                      <span style={styles.filePath}>{f}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Signal Files (Person 1) */}
+              {result.signal_files?.length > 0 && (
+                <div style={styles.section}>
+                  <p style={styles.sectionTitle}>Signal files</p>
+                  {result.signal_files.map((f) => (
+                    <span key={f} style={styles.pill}>{f.split("/").pop()}</span>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </>
@@ -119,7 +215,6 @@ export default function Popup() {
 const styles = {
   container: {
     width: 380,
-    minHeight: 200,
     padding: 16,
     fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
     background: "#0d1117",
@@ -153,7 +248,6 @@ const styles = {
   emptyText: {
     color: "#8b949e",
     fontSize: 13,
-    margin: 0,
   },
   repoBox: {
     background: "#161b22",
@@ -161,15 +255,11 @@ const styles = {
     borderRadius: 8,
     padding: "10px 12px",
     marginBottom: 12,
-    display: "flex",
-    flexDirection: "column",
-    gap: 2,
   },
   repoLabel: {
     fontSize: 10,
     color: "#8b949e",
     textTransform: "uppercase",
-    letterSpacing: 1,
   },
   repoName: {
     fontSize: 14,
@@ -183,60 +273,30 @@ const styles = {
     color: "#fff",
     border: "none",
     borderRadius: 8,
-    fontSize: 14,
     fontWeight: 600,
     cursor: "pointer",
     marginBottom: 12,
   },
-  loadingBox: {
-    textAlign: "center",
-    padding: "12px 0",
-  },
-  loadingText: {
-    fontSize: 13,
-    color: "#8b949e",
-    margin: "0 0 4px",
-  },
-  loadingSubtext: {
-    fontSize: 11,
-    color: "#484f58",
-    margin: 0,
-  },
+  loadingBox: { textAlign: "center" },
+  loadingText: { fontSize: 13, color: "#8b949e" },
+  loadingSubtext: { fontSize: 11, color: "#484f58" },
   errorBox: {
     background: "#3d1c1c",
     border: "1px solid #6e3535",
     borderRadius: 8,
     padding: 12,
   },
-  errorText: {
-    fontSize: 12,
-    color: "#f85149",
-    margin: 0,
-  },
-  resultBox: {
-    display: "flex",
-    flexDirection: "column",
-    gap: 12,
-  },
+  errorText: { color: "#f85149" },
+  resultBox: { display: "flex", flexDirection: "column", gap: 12 },
   stat: {
-    display: "inline-flex",
-    flexDirection: "column",
-    alignItems: "center",
     background: "#161b22",
     border: "1px solid #21262d",
     borderRadius: 8,
     padding: "8px 16px",
-    marginRight: 8,
+    alignItems: "center",
   },
-  statNum: {
-    fontSize: 20,
-    fontWeight: 700,
-    color: "#58a6ff",
-  },
-  statLabel: {
-    fontSize: 10,
-    color: "#8b949e",
-  },
+  statNum: { fontSize: 20, fontWeight: 700, color: "#58a6ff" },
+  statLabel: { fontSize: 10, color: "#8b949e" },
   section: {
     background: "#161b22",
     border: "1px solid #21262d",
@@ -247,25 +307,10 @@ const styles = {
     fontSize: 11,
     color: "#8b949e",
     textTransform: "uppercase",
-    letterSpacing: 1,
-    margin: "0 0 8px",
   },
-  fileRow: {
-    display: "flex",
-    flexDirection: "column",
-    marginBottom: 6,
-    paddingBottom: 6,
-    borderBottom: "1px solid #21262d",
-  },
-  fileName: {
-    fontSize: 13,
-    fontWeight: 600,
-    color: "#e6edf3",
-  },
-  filePath: {
-    fontSize: 11,
-    color: "#484f58",
-  },
+  fileRow: { marginBottom: 6 },
+  fileName: { fontSize: 13, fontWeight: 600 },
+  filePath: { fontSize: 11, color: "#484f58" },
   pill: {
     display: "inline-block",
     background: "#21262d",
@@ -276,9 +321,6 @@ const styles = {
     marginRight: 4,
     marginBottom: 4,
   },
+  bodyText: { fontSize: 13 },
+  listItem: { fontSize: 12, padding: "4px 0" },
 };
-
-// add at the very bottom of the file, after the styles object
-document.addEventListener('DOMContentLoaded', () => {
-  console.log('root element:', document.getElementById('root'));
-});

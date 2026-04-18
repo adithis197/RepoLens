@@ -7,7 +7,7 @@ import os
 import httpx
 
 
-async def call_llm(prompt: str, max_tokens: int = 2048) -> str:
+async def call_llm(prompt: str, max_tokens: int = 4096) -> str:
     """
     Send a prompt to the configured LLM and return the raw text response.
     """
@@ -24,12 +24,19 @@ async def call_llm(prompt: str, max_tokens: int = 2048) -> str:
 async def _call_openai_compatible(prompt: str, max_tokens: int) -> str:
     llm_api_key = os.getenv("LLM_API_KEY", "")
     llm_model = os.getenv("LLM_MODEL", "gpt-4o-mini")
-    llm_base_url = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
+    llm_base_url = os.getenv("LLM_BASE_URL", "").rstrip("/")
 
-    async with httpx.AsyncClient() as client:
+    url = f"{llm_base_url}/chat/completions"
+
+    headers = {
+        "Authorization": f"Bearer {llm_api_key}",
+        "Content-Type": "application/json",
+    }
+
+    async with httpx.AsyncClient(trust_env=False) as client:
         resp = await client.post(
-            f"{llm_base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {llm_api_key}"},
+            url,
+            headers=headers,
             json={
                 "model": llm_model,
                 "messages": [{"role": "user", "content": prompt}],
@@ -38,8 +45,9 @@ async def _call_openai_compatible(prompt: str, max_tokens: int) -> str:
             },
             timeout=60,
         )
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
+
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"]
 
 
 async def _call_local(prompt: str, max_tokens: int) -> str:
@@ -63,6 +71,7 @@ async def _call_local(prompt: str, max_tokens: int) -> str:
             },
             timeout=300,
         )
-        resp.raise_for_status()
-        data = resp.json()
-        return data.get("response", "").strip()
+
+    resp.raise_for_status()
+    data = resp.json()
+    return data.get("response", "").strip()

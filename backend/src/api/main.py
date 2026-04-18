@@ -5,7 +5,9 @@ Exposes endpoints consumed by the Chrome extension.
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .routes import router
+from dotenv import load_dotenv
 
+load_dotenv()
 app = FastAPI(title="RepoLens API", version="0.1.0")
 
 app.add_middleware(

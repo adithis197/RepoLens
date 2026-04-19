@@ -1,72 +1,125 @@
-"""
-Step 2B: Hybrid Retrieval & Importance Scoring (Token-Budgeted)
-
-Selects top-K files/chunks that fit within the token budget using:
-  1. Dependency graph centrality (PageRank)
-  2. BM25 keyword matching against Step 2A keywords
-  3. (Optional) CodeBERT embedding similarity
-
-Non-selected areas get compressed into folder/module-level summaries.
-"""
-import networkx as nx
 from rank_bm25 import BM25Okapi
+import networkx as nx
+import numpy as np
 
-from ..step0_ingestion.ingestion import RepoSnapshot, FileNode
-from ..step2a_context_inference.inference import RepoContext
 
-
-def select_top_k(
-    snapshot: RepoSnapshot,
-    dep_graph: nx.DiGraph,
-    context: RepoContext,
-    token_budget: int,
-) -> list[FileNode]:
-    """
-    Returns a list of FileNodes whose combined token count fits the budget.
-    """
+def select_top_k(snapshot, graph, context, token_budget=8000):
+    # Only consider files that have content
     candidates = [f for f in snapshot.file_tree if f.content]
 
-    centrality_scores = nx.pagerank(dep_graph)
-    bm25_scores = _bm25_score(candidates, context.keywords)
+    if not candidates:
+        print("[retrieval] no candidates found")
+        return []
 
-    ranked = _hybrid_rank(candidates, centrality_scores, bm25_scores)
+    # --- Signal 1: PageRank ---
+    try:
+        centrality = nx.pagerank(graph)
+    except Exception:
+        centrality = {}
+    max_c = max(centrality.values()) if centrality else 1
+    pagerank_scores = {
+        f.path: centrality.get(f.path, 0) / max_c
+        for f in candidates
+    }
 
-    selected, used_tokens = [], 0
-    for file_node in ranked:
-        tokens = _estimate_tokens(file_node.content or "")
+    # --- Signal 2: BM25 ---
+    corpus = []
+    for f in candidates:
+        tokens = (f.path + " " + (f.content or "")[:200]).lower().split()
+        corpus.append(tokens)
+
+    bm25 = BM25Okapi(corpus)
+    query_tokens = " ".join(context.keywords).lower().split()
+    bm25_raw = bm25.get_scores(query_tokens)
+    max_b = max(bm25_raw) if max(bm25_raw) > 0 else 1
+    bm25_scores = {
+        candidates[i].path: float(bm25_raw[i]) / max_b
+        for i in range(len(candidates))
+    }
+
+    # --- Pre-rank top 50 for CodeBERT (saves time) ---
+    pre_ranked = sorted(
+        candidates,
+        key=lambda f: (
+            0.5 * pagerank_scores.get(f.path, 0) +
+            0.5 * bm25_scores.get(f.path, 0)
+        ),
+        reverse=True
+    )
+    top_50 = pre_ranked[:50]
+
+    # --- Signal 3: CodeBERT ---
+    codebert_scores_partial = compute_codebert_scores(top_50, context.summary)
+
+    # Files outside top 50 get 0
+    codebert_scores = {f.path: 0.0 for f in candidates}
+    codebert_scores.update(codebert_scores_partial)
+
+    # --- Combine all three signals ---
+    ranked = sorted(
+        candidates,
+        key=lambda f: (
+            0.4 * pagerank_scores.get(f.path, 0) +
+            0.4 * bm25_scores.get(f.path, 0) +
+            0.2 * codebert_scores.get(f.path, 0)
+        ),
+        reverse=True
+    )
+
+    # --- Pick files until token budget is full ---
+    selected = []
+    used_tokens = 0
+    for f in ranked:
+        tokens = len(f.content) // 4
         if used_tokens + tokens > token_budget:
             break
-        selected.append(file_node)
+        selected.append(f)
         used_tokens += tokens
 
+    print(f"[retrieval] selected {len(selected)} files, ~{used_tokens} tokens")
     return selected
 
 
-def compress_remaining(snapshot: RepoSnapshot, selected: list[FileNode]) -> dict[str, str]:
-    """
-    For files NOT in `selected`, produce folder/module-level summaries.
-    Returns dict: folder_path -> summary_string.
-    """
-    # TODO: group unselected files by top-level folder,
-    # produce a one-line summary per folder
-    raise NotImplementedError
+def compute_codebert_scores(candidates, repo_summary):
+    try:
+        from sentence_transformers import SentenceTransformer
+
+        model = SentenceTransformer("microsoft/codebert-base")
+        query_embedding = model.encode(repo_summary)
+        file_texts = [(f.content or "")[:512] for f in candidates]
+        file_embeddings = model.encode(file_texts)
+
+        scores = {}
+        for i, f in enumerate(candidates):
+            norm = (
+                np.linalg.norm(query_embedding) *
+                np.linalg.norm(file_embeddings[i])
+            )
+            similarity = (
+                float(np.dot(query_embedding, file_embeddings[i]) / norm)
+                if norm > 0 else 0.0
+            )
+            scores[f.path] = max(0.0, similarity)
+
+        max_s = max(scores.values()) if scores and max(scores.values()) > 0 else 1
+        return {k: v / max_s for k, v in scores.items()}
+
+    except Exception as e:
+        print(f"[retrieval] CodeBERT failed, skipping: {e}")
+        return {f.path: 0.0 for f in candidates}
 
 
-def _bm25_score(candidates: list[FileNode], keywords: list[str]) -> dict[str, float]:
-    corpus = [f.path.replace("/", " ").replace(".", " ").split() for f in candidates]
-    bm25 = BM25Okapi(corpus)
-    scores = bm25.get_scores(keywords)
-    return {f.path: float(scores[i]) for i, f in enumerate(candidates)}
+def compress_remaining(snapshot, selected_paths):
+    selected_set = set(selected_paths)
+    folder_files = {}
 
+    for f in snapshot.file_tree:
+        if f.path not in selected_set:
+            folder = f.path.split("/")[0]
+            folder_files.setdefault(folder, []).append(f.path)
 
-def _hybrid_rank(candidates, centrality, bm25, alpha=0.5):
-    """Combine centrality + BM25 with weight alpha."""
-    def score(f):
-        c = centrality.get(f.path, 0.0)
-        b = bm25.get(f.path, 0.0)
-        return alpha * c + (1 - alpha) * b
-    return sorted(candidates, key=score, reverse=True)
+    summaries = {}
+    for folder, files in folder_files.items():
+        summaries[folder] = f"{len(files)} files (not included in detail)"
 
-
-def _estimate_tokens(text: str) -> int:
-    return len(text) // 4  # rough 4-chars-per-token heuristic
+    return summaries

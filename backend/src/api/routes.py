@@ -6,6 +6,7 @@ from ..pipeline.step1_parsing.parser import (
     get_high_centrality_files,
 )
 from ..pipeline.step2a_context_inference.inference import infer_repo_context
+from ..pipeline.step2b_retrieval.retrieval import select_top_k, compress_remaining
 
 router = APIRouter()
 
@@ -22,6 +23,8 @@ async def analyze_repo(req: AnalyzeRequest):
 
     # LLM-based context inference
     context = await infer_repo_context(snapshot, graph)
+    top_k = select_top_k(snapshot, graph, context, token_budget=8000)
+    compressed = compress_remaining(snapshot, [f.path for f in top_k])
 
     return {
         # Repository metadata
@@ -40,6 +43,11 @@ async def analyze_repo(req: AnalyzeRequest):
         "main_modules": context.main_modules,
         "entry_points": context.entry_points,
         "keywords": context.keywords,
+
+        "selected_files": [f.path for f in top_k],
+        "total_selected": len(top_k),
+        "estimated_tokens": sum(len(f.content or "") // 4 for f in top_k),
+        "compressed_folders": compressed,
     }
 
 

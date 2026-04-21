@@ -38,5 +38,9 @@ Rules:
 - Only include nodes/edges you can ground to a specific file above
 - Assign stable snake_case IDs to each node (used for UI click-through)
 
-Respond ONLY with valid JSON. No markdown fences.
+Return ONLY valid JSON.
+Do NOT truncate.
+Do NOT use markdown.
+Ensure all strings are properly closed.
+Ensure flow_mermaid entries are complete strings.
 """

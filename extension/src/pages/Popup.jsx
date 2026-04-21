@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import ArchitectureDiagram from "../components/ArchitectureDiagram";
 
 export default function Popup() {
   const [repoUrl, setRepoUrl] = useState("");
@@ -204,6 +205,19 @@ export default function Popup() {
                   ))}
                 </div>
               )}
+
+              {/* Architecture Diagram */}
+              {result.architecture_mermaid && (
+                <div style={styles.section}>
+                  <p style={styles.sectionTitle}>Architecture</p>
+
+              <ArchitectureDiagram
+                code={result.architecture_mermaid}
+                evidenceMap={result.evidence_map}
+                repoUrl={repoUrl}
+              />
+            </div>
+            )}
             </div>
           )}
         </>
@@ -250,7 +264,7 @@ const styles = {
     fontSize: 13,
   },
   repoBox: {
-    background: "#161b22",
+    background: "#e1e8f1",
     border: "1px solid #21262d",
     borderRadius: 8,
     padding: "10px 12px",

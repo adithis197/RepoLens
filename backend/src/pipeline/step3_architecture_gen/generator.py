@@ -18,7 +18,7 @@ from ..step0_ingestion.ingestion import FileNode
 from ...llm.client import call_llm
 from .prompts import build_architecture_prompt
 from .evidence import build_evidence_graph
-
+import json
 
 async def generate_architecture(context: RepoContext, top_k_files: list[FileNode]) -> dict:
     """
@@ -29,4 +29,9 @@ async def generate_architecture(context: RepoContext, top_k_files: list[FileNode
     raw = await call_llm(prompt)
 
     # TODO: parse JSON from raw — extract architecture_mermaid, flow_mermaid, evidence_map
+    try:
+        llm_result = json.loads(raw)
+    except Exception:
+        raise ValueError(f"LLM did not return valid JSON:\n{raw}")
+    
     return {"raw": raw, "evidence_graph": evidence_graph}

@@ -5,7 +5,7 @@ Swap backend via LLM_BACKEND env var: "openai" | "local"
 """
 import os
 import httpx
-
+import asyncio  
 
 async def call_llm(prompt: str, max_tokens: int = 4096) -> str:
     """
@@ -34,7 +34,10 @@ async def _call_openai_compatible(prompt: str, max_tokens: int) -> str:
     }
 
     async with httpx.AsyncClient(trust_env=False) as client:
-        resp = await client.post(
+        resp = None
+
+        for i in range(3):
+            resp = await client.post(
             url,
             headers=headers,
             json={
@@ -44,8 +47,13 @@ async def _call_openai_compatible(prompt: str, max_tokens: int) -> str:
                 "temperature": 0.2,
             },
             timeout=60,
-        )
+            )
 
+            # success case
+            if resp.status_code != 503:
+                break
+
+        await asyncio.sleep(2 ** i)  # exponential backoff
     resp.raise_for_status()
     return resp.json()["choices"][0]["message"]["content"]
 

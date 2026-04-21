@@ -47,17 +47,30 @@ def parse_repo_url(url: str):
 
     return owner, repo
 
+async def get_default_branch(client, owner, repo):
+    resp = await client.get(
+        f"{BASE_URL}/repos/{owner}/{repo}",
+        headers=_headers(),
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json()["default_branch"]
 
 async def get_file_tree(owner: str, repo: str) -> list:
     async with httpx.AsyncClient(follow_redirects=True) as client:
+        # 🔹 get correct branch (main/master/etc.)
+        branch = await get_default_branch(client, owner, repo)
+
         resp = await client.get(
-            f"{BASE_URL}/repos/{owner}/{repo}/git/trees/HEAD",
+            f"{BASE_URL}/repos/{owner}/{repo}/git/trees/{branch}",
             headers=_headers(),
             params={"recursive": "1"},
             timeout=30,
         )
+
         resp.raise_for_status()
         data = resp.json()
+
         return [
             item for item in data.get("tree", [])
             if item.get("type") == "blob"

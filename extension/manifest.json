@@ -3,7 +3,7 @@
   "name": "RepoLens",
   "version": "0.1.0",
   "description": "Generate traceable architecture diagrams for GitHub repos",
-  "permissions": ["activeTab", "storage"],
+  "permissions": ["activeTab", "storage", "tabs"],
   "host_permissions": ["https://github.com/*", "http://localhost:8000/*"],
   "action": {
     "default_popup": "popup.html"

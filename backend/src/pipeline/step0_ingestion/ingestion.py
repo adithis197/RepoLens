@@ -51,6 +51,7 @@ class RepoSnapshot:
     repo_url: str
     owner: str
     repo: str
+    default_branch: str = "main"
     file_tree: list = field(default_factory=list)
     signal_files: dict = field(default_factory=dict)
 
@@ -78,17 +79,17 @@ async def ingest_repo(repo_url: str) -> RepoSnapshot:
     owner, repo = parse_repo_url(repo_url)
     snapshot = RepoSnapshot(repo_url=repo_url, owner=owner, repo=repo)
 
-    raw_tree = await get_file_tree(owner, repo)
+    raw_tree, default_branch = await get_file_tree(owner, repo)
+    snapshot.default_branch = default_branch
+    print(f"[ingestion] default branch: {default_branch}")
 
     for item in raw_tree:
         path = item.get("path", "")
         size = item.get("size", 0)
-
         if _should_skip(path):
             continue
         if size > MAX_FILE_SIZE:
             continue
-
         node = FileNode(
             path=path,
             extension=_get_extension(path),
@@ -108,13 +109,8 @@ async def ingest_repo(repo_url: str) -> RepoSnapshot:
         if n.extension in SOURCE_EXTENSIONS and not n.is_signal and not n.content
     ]
 
-    pinned = [
-        n for n in source_files
-        if n.path.split("/")[-1].lower() in ALWAYS_FETCH_FILENAMES
-    ]
-
+    pinned = [n for n in source_files if n.path.split("/")[-1].lower() in ALWAYS_FETCH_FILENAMES]
     pinned.sort(key=lambda n: (n.path.count("/"), n.size_bytes))
-
     normal = [n for n in source_files if n not in pinned]
     normal.sort(key=lambda n: (n.path.count("/"), n.size_bytes))
 

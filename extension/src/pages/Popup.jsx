@@ -1,6 +1,8 @@
 import { useState, useEffect } from "react";
 import ArchitectureDiagram from "../components/ArchitectureDiagram";
 
+const CACHE_KEY = "repolens_last_result";
+
 export default function Popup() {
   const [repoUrl, setRepoUrl] = useState("");
   const [repoName, setRepoName] = useState("");
@@ -12,24 +14,22 @@ export default function Popup() {
   useEffect(() => {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       const url = tabs[0]?.url || "";
-      console.log("Current tab URL:", url);
-
       const match = url.match(/^https?:\/\/github\.com\/([^/]+)\/([^/?#]+)/);
 
       if (match) {
         const owner = match[1];
         const repo = match[2].replace(/\.git$/, "");
         const cleanRepoUrl = `https://github.com/${owner}/${repo}`;
-
         setIsGitHub(true);
         setRepoName(`${owner}/${repo}`);
         setRepoUrl(cleanRepoUrl);
 
-        console.log("Clean repo URL:", cleanRepoUrl);
-      } else {
-        setIsGitHub(false);
-        setRepoName("");
-        setRepoUrl("");
+        chrome.storage.local.get([CACHE_KEY], (data) => {
+          const cached = data[CACHE_KEY];
+          if (cached && cached.repoUrl === cleanRepoUrl) {
+            setResult(cached.result);
+          }
+        });
       }
     });
   }, []);
@@ -40,36 +40,41 @@ export default function Popup() {
     setResult(null);
 
     try {
-      console.log("Sending repo_url:", repoUrl);
-
       const res = await fetch("http://localhost:8000/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ repo_url: repoUrl }),
       });
-
       const text = await res.text();
-      console.log("Raw response:", text);
-
-      if (!res.ok) {
-        throw new Error(`Backend returned ${res.status}: ${text}`);
-      }
+      if (!res.ok) throw new Error(`Backend ${res.status}: ${text.slice(0, 200)}`);
 
       const data = JSON.parse(text);
       setResult(data);
+
+      chrome.storage.local.set({
+        [CACHE_KEY]: { repoUrl, result: data, timestamp: Date.now() },
+      });
     } catch (e) {
-      console.error("Analyze failed:", e);
       setError(e.message || "Something went wrong.");
     }
-
     setLoading(false);
+  }
+
+  function clearCache() {
+    chrome.storage.local.remove(CACHE_KEY);
+    setResult(null);
   }
 
   return (
     <div style={styles.container}>
       <div style={styles.header}>
         <span style={styles.logo}>RepoLens</span>
-        <span style={styles.badge}>beta</span>
+        {/* <span style={styles.badge}></span> */}
+        {result && (
+          <button onClick={clearCache} style={styles.resetBtn} title="Clear cached result">
+            ↻
+          </button>
+        )}
       </div>
 
       {!isGitHub ? (
@@ -83,20 +88,20 @@ export default function Popup() {
             <span style={styles.repoName}>{repoName}</span>
           </div>
 
-          <button
-            style={{ ...styles.button, opacity: loading ? 0.7 : 1 }}
-            onClick={handleAnalyze}
-            disabled={loading}
-          >
-            {loading ? "Analyzing..." : "Generate Architecture"}
-          </button>
+          {!result && (
+            <button
+              style={{ ...styles.button, opacity: loading ? 0.7 : 1 }}
+              onClick={handleAnalyze}
+              disabled={loading}
+            >
+              {loading ? "Analyzing..." : "Generate Architecture"}
+            </button>
+          )}
 
           {loading && (
             <div style={styles.loadingBox}>
-              <p style={styles.loadingText}>
-                Fetching repo + building dependency graph...
-              </p>
-              <p style={styles.loadingSubtext}>This may take 20–30 seconds</p>
+              <p style={styles.loadingText}>Fetching repo + building graph + calling LLM...</p>
+              <p style={styles.loadingSubtext}>This may take 30-60 seconds</p>
             </div>
           )}
 
@@ -108,116 +113,102 @@ export default function Popup() {
 
           {result && (
             <div style={styles.resultBox}>
-              {/* Stats (Person 1) */}
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {result.narrative_summary && (
+                <div style={styles.heroSection}>
+                  <p style={styles.heroTitle}>What this repo does</p>
+                  <p style={styles.heroText}>{result.narrative_summary}</p>
+                </div>
+              )}
+
+              {!result.narrative_summary && result.repo_summary && (
+                <div style={styles.heroSection}>
+                  <p style={styles.heroTitle}>What this repo does</p>
+                  <p style={styles.heroText}>{result.repo_summary}</p>
+                </div>
+              )}
+
+              <div style={styles.statsRow}>
                 <div style={styles.stat}>
-                  <span style={styles.statNum}>{result.total_files}</span>
+                  <span style={styles.statNum}>{result.total_files || 0}</span>
                   <span style={styles.statLabel}>files</span>
                 </div>
                 <div style={styles.stat}>
-                  <span style={styles.statNum}>{result.graph_edges}</span>
+                  <span style={styles.statNum}>{result.graph_edges || 0}</span>
                   <span style={styles.statLabel}>imports</span>
                 </div>
                 <div style={styles.stat}>
-                  <span style={styles.statNum}>{result.graph_nodes}</span>
-                  <span style={styles.statLabel}>nodes</span>
+                  <span style={styles.statNum}>{result.total_selected || 0}</span>
+                  <span style={styles.statLabel}>analyzed</span>
                 </div>
               </div>
 
-              {/* Summary */}
-              {result.repo_summary && (
-                <div style={styles.section}>
-                  <p style={styles.sectionTitle}>Repository summary</p>
-                  <p style={styles.bodyText}>{result.repo_summary}</p>
+              {result.architecture_mermaid && (
+                <div style={styles.diagramSection}>
+                  <p style={styles.sectionTitle}>Architecture · click any node to view code</p>
+                  <ArchitectureDiagram
+                    code={result.architecture_mermaid}
+                    evidenceMap={result.evidence_map}
+                    repoUrl={repoUrl}
+                    defaultBranch={result.default_branch || "main"}
+                  />
                 </div>
               )}
 
-              {/* Domain */}
-              {result.domain && (
-                <div style={styles.section}>
-                  <p style={styles.sectionTitle}>Domain</p>
-                  <p style={styles.bodyText}>{result.domain}</p>
-                </div>
-              )}
-
-              {/* Tech Stack */}
               {result.tech_stack?.length > 0 && (
                 <div style={styles.section}>
                   <p style={styles.sectionTitle}>Tech stack</p>
-                  {result.tech_stack.map((item) => (
-                    <span key={item} style={styles.pill}>{item}</span>
-                  ))}
+                  <div>
+                    {result.tech_stack.map((item) => (
+                      <span key={item} style={styles.pill}>{item}</span>
+                    ))}
+                  </div>
                 </div>
               )}
 
-              {/* Main Modules */}
               {result.main_modules?.length > 0 && (
                 <div style={styles.section}>
                   <p style={styles.sectionTitle}>Main modules</p>
                   {result.main_modules.map((item) => (
-                    <div key={item} style={styles.listItem}>{item}</div>
+                    <div key={item} style={styles.listItem}>· {item}</div>
                   ))}
                 </div>
               )}
 
-              {/* Entry Points */}
               {result.entry_points?.length > 0 && (
                 <div style={styles.section}>
-                  <p style={styles.sectionTitle}>Entry points</p>
-                  {result.entry_points.map((item) => (
-                    <div key={item} style={styles.fileRow}>
-                      <span style={styles.fileName}>{item.split("/").pop()}</span>
-                      <span style={styles.filePath}>{item}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {/* Keywords */}
-              {result.keywords?.length > 0 && (
-                <div style={styles.section}>
-                  <p style={styles.sectionTitle}>Keywords</p>
-                  {result.keywords.map((item) => (
-                    <span key={item} style={styles.pill}>{item}</span>
-                  ))}
-                </div>
-              )}
-
-              {/* Top Central Files (Person 1) */}
-              {result.top_central_files?.length > 0 && (
-                <div style={styles.section}>
-                  <p style={styles.sectionTitle}>Top central files</p>
-                  {result.top_central_files.slice(0, 5).map((f) => (
-                    <div key={f} style={styles.fileRow}>
+                  <p style={styles.sectionTitle}>Where to start reading</p>
+                  {result.entry_points.slice(0, 5).map((f) => (
+                    <a
+                      key={f}
+                      href={`${repoUrl}/blob/${result.default_branch || "main"}/${f}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={styles.fileLink}
+                    >
                       <span style={styles.fileName}>{f.split("/").pop()}</span>
                       <span style={styles.filePath}>{f}</span>
-                    </div>
+                    </a>
                   ))}
                 </div>
               )}
 
-              {/* Signal Files (Person 1) */}
-              {result.signal_files?.length > 0 && (
+              {result.top_central_files?.length > 0 && (
                 <div style={styles.section}>
-                  <p style={styles.sectionTitle}>Signal files</p>
-                  {result.signal_files.map((f) => (
-                    <span key={f} style={styles.pill}>{f.split("/").pop()}</span>
+                  <p style={styles.sectionTitle}>Most imported files</p>
+                  {result.top_central_files.slice(0, 5).map((f) => (
+                    <a
+                      key={f}
+                      href={`${repoUrl}/blob/${result.default_branch || "main"}/${f}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={styles.fileLink}
+                    >
+                      <span style={styles.fileName}>{f.split("/").pop()}</span>
+                      <span style={styles.filePath}>{f}</span>
+                    </a>
                   ))}
                 </div>
               )}
-
-              {/* Architecture Diagram */}
-              {result.architecture_mermaid && (
-                <div style={styles.section}>
-                  <p style={styles.sectionTitle}>Architecture</p>
-
-              <ArchitectureDiagram
-                code={result.architecture_mermaid}
-                evidenceMap={result.evidence_map}
-                repoUrl={repoUrl}
-              />
-            </div>
-            )}
             </div>
           )}
         </>
@@ -228,7 +219,9 @@ export default function Popup() {
 
 const styles = {
   container: {
-    width: 380,
+    width: 520,
+    maxHeight: 640,
+    overflowY: "auto",
     padding: 16,
     fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
     background: "#0d1117",
@@ -242,11 +235,7 @@ const styles = {
     borderBottom: "1px solid #21262d",
     paddingBottom: 12,
   },
-  logo: {
-    fontSize: 18,
-    fontWeight: 700,
-    color: "#58a6ff",
-  },
+  logo: { fontSize: 18, fontWeight: 700, color: "#58a6ff" },
   badge: {
     fontSize: 10,
     background: "#388bfd26",
@@ -255,62 +244,102 @@ const styles = {
     borderRadius: 10,
     border: "1px solid #388bfd",
   },
-  emptyState: {
-    padding: "32px 0",
-    textAlign: "center",
-  },
-  emptyText: {
+  resetBtn: {
+    marginLeft: "auto",
+    background: "transparent",
+    border: "1px solid #30363d",
     color: "#8b949e",
-    fontSize: 13,
+    borderRadius: 6,
+    padding: "2px 8px",
+    cursor: "pointer",
+    fontSize: 14,
   },
+  emptyState: { padding: "32px 0", textAlign: "center" },
+  emptyText: { color: "#8b949e", fontSize: 13 },
   repoBox: {
-    background: "#e1e8f1",
+    background: "#161b22",
     border: "1px solid #21262d",
     borderRadius: 8,
     padding: "10px 12px",
     marginBottom: 12,
+    display: "flex",
+    flexDirection: "column",
+    gap: 2,
   },
   repoLabel: {
     fontSize: 10,
     color: "#8b949e",
     textTransform: "uppercase",
+    letterSpacing: 1,
   },
-  repoName: {
-    fontSize: 14,
-    fontWeight: 600,
-    color: "#58a6ff",
-  },
+  repoName: { fontSize: 14, fontWeight: 600, color: "#58a6ff" },
   button: {
     width: "100%",
-    padding: "10px 0",
+    padding: "12px 0",
     background: "#238636",
     color: "#fff",
     border: "none",
     borderRadius: 8,
+    fontSize: 14,
     fontWeight: 600,
     cursor: "pointer",
     marginBottom: 12,
   },
-  loadingBox: { textAlign: "center" },
-  loadingText: { fontSize: 13, color: "#8b949e" },
-  loadingSubtext: { fontSize: 11, color: "#484f58" },
+  loadingBox: { textAlign: "center", padding: "16px 0" },
+  loadingText: { fontSize: 13, color: "#8b949e", margin: "0 0 4px" },
+  loadingSubtext: { fontSize: 11, color: "#484f58", margin: 0 },
   errorBox: {
     background: "#3d1c1c",
     border: "1px solid #6e3535",
     borderRadius: 8,
     padding: 12,
   },
-  errorText: { color: "#f85149" },
-  resultBox: { display: "flex", flexDirection: "column", gap: 12 },
+  errorText: { color: "#f85149", fontSize: 12, margin: 0 },
+  resultBox: { display: "flex", flexDirection: "column", gap: 14 },
+
+  heroSection: {
+    background: "#161b22",
+    border: "1px solid #30363d",
+    borderRadius: 10,
+    padding: 16,
+    borderLeft: "3px solid #58a6ff",
+  },
+  heroTitle: {
+    fontSize: 11,
+    color: "#58a6ff",
+    textTransform: "uppercase",
+    letterSpacing: 1.2,
+    margin: "0 0 8px",
+    fontWeight: 600,
+  },
+  heroText: {
+    fontSize: 13,
+    lineHeight: 1.6,
+    color: "#e6edf3",
+    margin: 0,
+  },
+
+  statsRow: { display: "flex", gap: 8 },
   stat: {
+    flex: 1,
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
     background: "#161b22",
     border: "1px solid #21262d",
     borderRadius: 8,
-    padding: "8px 16px",
-    alignItems: "center",
+    padding: "10px 8px",
   },
-  statNum: { fontSize: 20, fontWeight: 700, color: "#58a6ff" },
-  statLabel: { fontSize: 10, color: "#8b949e" },
+  statNum: { fontSize: 22, fontWeight: 700, color: "#58a6ff" },
+  statLabel: { fontSize: 10, color: "#8b949e", marginTop: 2 },
+
+  diagramSection: {
+    background: "#161b22",
+    border: "1px solid #21262d",
+    borderRadius: 8,
+    padding: 12,
+  },
+
   section: {
     background: "#161b22",
     border: "1px solid #21262d",
@@ -321,20 +350,30 @@ const styles = {
     fontSize: 11,
     color: "#8b949e",
     textTransform: "uppercase",
+    letterSpacing: 1,
+    margin: "0 0 8px",
+    fontWeight: 600,
   },
-  fileRow: { marginBottom: 6 },
-  fileName: { fontSize: 13, fontWeight: 600 },
+  fileLink: {
+    display: "flex",
+    flexDirection: "column",
+    marginBottom: 6,
+    paddingBottom: 6,
+    borderBottom: "1px solid #21262d",
+    textDecoration: "none",
+    cursor: "pointer",
+  },
+  fileName: { fontSize: 13, fontWeight: 600, color: "#58a6ff" },
   filePath: { fontSize: 11, color: "#484f58" },
   pill: {
     display: "inline-block",
     background: "#21262d",
-    color: "#8b949e",
+    color: "#c9d1d9",
     fontSize: 11,
-    padding: "3px 8px",
-    borderRadius: 10,
-    marginRight: 4,
-    marginBottom: 4,
+    padding: "4px 10px",
+    borderRadius: 12,
+    marginRight: 5,
+    marginBottom: 5,
   },
-  bodyText: { fontSize: 13 },
-  listItem: { fontSize: 12, padding: "4px 0" },
+  listItem: { fontSize: 12, padding: "3px 0", color: "#c9d1d9" },
 };
